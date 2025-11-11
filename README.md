@@ -15,7 +15,7 @@ The official Go SDK for [StreamBus](https://github.com/shawntherrien/streambus),
 ## Installation
 
 ```bash
-go get github.com/shawntherrien/streambus-sdk
+go get github.com/stherrien/streambus-sdk
 ```
 
 ## Quick Start
@@ -27,7 +27,7 @@ package main
 
 import (
     "log"
-    "github.com/shawntherrien/streambus-sdk/client"
+    "github.com/stherrien/streambus-sdk/client"
 )
 
 func main() {
@@ -70,7 +70,7 @@ package main
 
 import (
     "log"
-    "github.com/shawntherrien/streambus-sdk/client"
+    "github.com/stherrien/streambus-sdk/client"
 )
 
 func main() {
@@ -116,7 +116,7 @@ import (
     "context"
     "log"
     "time"
-    "github.com/shawntherrien/streambus-sdk/client"
+    "github.com/stherrien/streambus-sdk/client"
 )
 
 func main() {
