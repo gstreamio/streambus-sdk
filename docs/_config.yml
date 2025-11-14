@@ -1,0 +1,53 @@
+title: StreamBus Go SDK Documentation
+description: High-performance Go SDK for building distributed streaming applications with StreamBus
+theme: jekyll-theme-minimal
+baseurl: "/streambus-sdk"
+url: "https://gstreamio.github.io"
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Navigation
+navigation:
+  - title: Home
+    url: /
+  - title: Getting Started
+    url: /getting-started
+  - title: API Reference
+    url: /api-reference
+  - title: Architecture
+    url: /architecture
+  - title: Examples
+    url: /examples
+  - title: Best Practices
+    url: /best-practices
+  - title: GitHub
+    url: https://github.com/gstreamio/streambus-sdk
+
+# Exclude files from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+
+# Plugin settings
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# SEO settings
+author: StreamBus Team
+twitter:
+  card: summary
+  username: streambus
+social:
+  name: StreamBus
+  links:
+    - https://github.com/gstreamio/streambus-sdk
+
+# Google Analytics (if you have one)
+# google_analytics: UA-XXXXXXXX-X
