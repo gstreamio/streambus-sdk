@@ -243,7 +243,6 @@ func (c *Codec) DecodeResponsePayload(resp *Response, reqType RequestType) error
 		payload.NumMessages = binary.BigEndian.Uint32(data[offset:])
 		offset += 4
 		payload.HighWaterMark = int64(binary.BigEndian.Uint64(data[offset:]))
-		offset += 8
 		resp.Payload = payload
 		return nil
 
@@ -273,7 +272,6 @@ func (c *Codec) DecodeResponsePayload(resp *Response, reqType RequestType) error
 		payload.EndOffset = int64(binary.BigEndian.Uint64(data[offset:]))
 		offset += 8
 		payload.HighWaterMark = int64(binary.BigEndian.Uint64(data[offset:]))
-		offset += 8
 		resp.Payload = payload
 		return nil
 
@@ -284,7 +282,6 @@ func (c *Codec) DecodeResponsePayload(resp *Response, reqType RequestType) error
 		payload.Topic = string(data[offset : offset+int(topicLen)])
 		offset += int(topicLen)
 		payload.Created = data[offset] == 1
-		offset++
 		resp.Payload = payload
 		return nil
 
@@ -295,7 +292,6 @@ func (c *Codec) DecodeResponsePayload(resp *Response, reqType RequestType) error
 		payload.Topic = string(data[offset : offset+int(topicLen)])
 		offset += int(topicLen)
 		payload.Deleted = data[offset] == 1
-		offset++
 		resp.Payload = payload
 		return nil
 
@@ -322,7 +318,6 @@ func (c *Codec) DecodeResponsePayload(resp *Response, reqType RequestType) error
 		payload.Status = string(data[offset : offset+int(statusLen)])
 		offset += int(statusLen)
 		payload.Uptime = int64(binary.BigEndian.Uint64(data[offset:]))
-		offset += 8
 		resp.Payload = payload
 		return nil
 
