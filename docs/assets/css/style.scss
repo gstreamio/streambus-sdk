@@ -1,0 +1,280 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+// Custom styles for StreamBus SDK documentation
+
+// Color variables
+$primary-color: #0066cc;
+$secondary-color: #00a86b;
+$dark-bg: #1a1a1a;
+$light-gray: #f5f5f5;
+$border-color: #e1e4e8;
+
+// Hero section
+.hero-section {
+  text-align: center;
+  padding: 3rem 0;
+  margin-bottom: 3rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 8px;
+
+  h2 {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+    font-weight: 700;
+  }
+
+  p {
+    font-size: 1.2rem;
+    margin-bottom: 2rem;
+    opacity: 0.95;
+  }
+
+  .hero-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+// Buttons
+.btn {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+
+  &.btn-primary {
+    background: white;
+    color: $primary-color;
+    border-color: white;
+
+    &:hover {
+      background: transparent;
+      color: white;
+      border-color: white;
+    }
+  }
+
+  &.btn-secondary {
+    background: transparent;
+    color: white;
+    border-color: white;
+
+    &:hover {
+      background: white;
+      color: $primary-color;
+    }
+  }
+
+  &.btn-large {
+    padding: 1rem 2rem;
+    font-size: 1.1rem;
+  }
+}
+
+// Features grid
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  padding: 1.5rem;
+  background: $light-gray;
+  border-radius: 8px;
+  border: 1px solid $border-color;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+
+  &:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  h3 {
+    margin-top: 0;
+    color: $primary-color;
+    font-size: 1.2rem;
+  }
+
+  p {
+    margin-bottom: 0;
+    color: #666;
+  }
+}
+
+// Documentation links
+.docs-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.doc-link {
+  padding: 1.5rem;
+  background: white;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+  transition: border-color 0.3s ease;
+
+  &:hover {
+    border-color: $primary-color;
+  }
+
+  h4 {
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+
+    a {
+      color: $primary-color;
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+
+  p {
+    margin-bottom: 0;
+    color: #666;
+    font-size: 0.95rem;
+  }
+}
+
+// CTA section
+.cta-section {
+  text-align: center;
+  margin: 3rem 0;
+  padding: 2rem;
+  background: $light-gray;
+  border-radius: 8px;
+}
+
+// Code highlighting improvements
+pre {
+  background-color: #2d2d2d;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+pre code {
+  color: #f8f8f2;
+  background-color: transparent;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.9rem;
+}
+
+// Navigation improvements
+.nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+
+  li {
+    margin-bottom: 0.5rem;
+
+    a {
+      display: block;
+      padding: 0.5rem 1rem;
+      color: #333;
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: all 0.3s ease;
+
+      &:hover {
+        background: $light-gray;
+        border-left-color: $primary-color;
+      }
+
+      &.active {
+        background: $light-gray;
+        border-left-color: $secondary-color;
+        font-weight: 600;
+      }
+    }
+  }
+}
+
+// Tables
+table {
+  width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+
+  th {
+    background: $light-gray;
+    padding: 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    border: 1px solid $border-color;
+  }
+
+  td {
+    padding: 0.75rem;
+    border: 1px solid $border-color;
+  }
+
+  tr:hover {
+    background: #fafafa;
+  }
+}
+
+// Alert boxes
+.alert {
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+
+  &.alert-info {
+    background: #d1ecf1;
+    border-color: #bee5eb;
+    color: #0c5460;
+  }
+
+  &.alert-warning {
+    background: #fff3cd;
+    border-color: #ffeeba;
+    color: #856404;
+  }
+
+  &.alert-danger {
+    background: #f8d7da;
+    border-color: #f5c6cb;
+    color: #721c24;
+  }
+}
+
+// Responsive design
+@media (max-width: 768px) {
+  .hero-section {
+    h2 {
+      font-size: 2rem;
+    }
+
+    p {
+      font-size: 1rem;
+    }
+  }
+
+  .features-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .docs-links {
+    grid-template-columns: 1fr;
+  }
+}
