@@ -8,28 +8,28 @@ type Response struct {
 
 // ProduceResponse represents a produce response
 type ProduceResponse struct {
-	Topic          string
-	PartitionID    uint32
-	BaseOffset     int64  // First offset assigned
-	NumMessages    uint32 // Number of messages written
-	HighWaterMark  int64  // Current high water mark
+	Topic         string
+	PartitionID   uint32
+	BaseOffset    int64  // First offset assigned
+	NumMessages   uint32 // Number of messages written
+	HighWaterMark int64  // Current high water mark
 }
 
 // FetchResponse represents a fetch response
 type FetchResponse struct {
-	Topic          string
-	PartitionID    uint32
-	HighWaterMark  int64
-	Messages       []Message
+	Topic         string
+	PartitionID   uint32
+	HighWaterMark int64
+	Messages      []Message
 }
 
 // GetOffsetResponse represents a get offset response
 type GetOffsetResponse struct {
-	Topic          string
-	PartitionID    uint32
-	StartOffset    int64
-	EndOffset      int64
-	HighWaterMark  int64
+	Topic         string
+	PartitionID   uint32
+	StartOffset   int64
+	EndOffset     int64
+	HighWaterMark int64
 }
 
 // CreateTopicResponse represents a create topic response

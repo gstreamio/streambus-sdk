@@ -71,14 +71,14 @@ func TestErrorIs(t *testing.T) {
 
 func TestErrorMessages(t *testing.T) {
 	errorMessages := map[error]string{
-		ErrNoBrokers:         "broker",
-		ErrNoConnection:      "connection",
-		ErrRequestTimeout:    "timeout",
-		ErrInvalidTopic:      "topic",
-		ErrInvalidPartition:  "partition",
-		ErrNoMessages:        "message",
-		ErrProducerClosed:    "producer",
-		ErrConsumerClosed:    "consumer",
+		ErrNoBrokers:        "broker",
+		ErrNoConnection:     "connection",
+		ErrRequestTimeout:   "timeout",
+		ErrInvalidTopic:     "topic",
+		ErrInvalidPartition: "partition",
+		ErrNoMessages:       "message",
+		ErrProducerClosed:   "producer",
+		ErrConsumerClosed:   "consumer",
 	}
 
 	for err, keyword := range errorMessages {

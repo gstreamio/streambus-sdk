@@ -60,7 +60,6 @@ func TestRequestTypes(t *testing.T) {
 	}
 }
 
-
 func TestProduceRequestValidation(t *testing.T) {
 	tests := []struct {
 		name    string
