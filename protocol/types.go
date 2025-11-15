@@ -12,31 +12,31 @@ const (
 // Message size limits
 const (
 	MaxMessageSize = 1024 * 1024 * 10 // 10MB
-	HeaderSize     = 20                // Length(4) + RequestID(8) + Type(1) + Version(1) + Flags(2) + CRC32(4)
+	HeaderSize     = 20               // Length(4) + RequestID(8) + Type(1) + Version(1) + Flags(2) + CRC32(4)
 )
 
 // RequestType represents the type of request
 type RequestType byte
 
 const (
-	RequestTypeProduce         RequestType = 0x01
-	RequestTypeFetch           RequestType = 0x02
-	RequestTypeGetOffset       RequestType = 0x03
-	RequestTypeCreateTopic     RequestType = 0x04
-	RequestTypeDeleteTopic     RequestType = 0x05
-	RequestTypeListTopics      RequestType = 0x06
-	RequestTypeHealthCheck     RequestType = 0x07
-	RequestTypeJoinGroup       RequestType = 0x08
-	RequestTypeSyncGroup       RequestType = 0x09
-	RequestTypeHeartbeat       RequestType = 0x0A
-	RequestTypeLeaveGroup      RequestType = 0x0B
-	RequestTypeOffsetCommit    RequestType = 0x0C
-	RequestTypeOffsetFetch     RequestType = 0x0D
-	RequestTypeInitProducerID  RequestType = 0x0E
+	RequestTypeProduce            RequestType = 0x01
+	RequestTypeFetch              RequestType = 0x02
+	RequestTypeGetOffset          RequestType = 0x03
+	RequestTypeCreateTopic        RequestType = 0x04
+	RequestTypeDeleteTopic        RequestType = 0x05
+	RequestTypeListTopics         RequestType = 0x06
+	RequestTypeHealthCheck        RequestType = 0x07
+	RequestTypeJoinGroup          RequestType = 0x08
+	RequestTypeSyncGroup          RequestType = 0x09
+	RequestTypeHeartbeat          RequestType = 0x0A
+	RequestTypeLeaveGroup         RequestType = 0x0B
+	RequestTypeOffsetCommit       RequestType = 0x0C
+	RequestTypeOffsetFetch        RequestType = 0x0D
+	RequestTypeInitProducerID     RequestType = 0x0E
 	RequestTypeAddPartitionsToTxn RequestType = 0x0F
-	RequestTypeAddOffsetsToTxn RequestType = 0x10
-	RequestTypeEndTxn          RequestType = 0x11
-	RequestTypeTxnOffsetCommit RequestType = 0x12
+	RequestTypeAddOffsetsToTxn    RequestType = 0x10
+	RequestTypeEndTxn             RequestType = 0x11
+	RequestTypeTxnOffsetCommit    RequestType = 0x12
 )
 
 // String returns the string representation of RequestType
@@ -135,21 +135,21 @@ const (
 	ErrIllegalGeneration         ErrorCode = 28
 	ErrInconsistentGroupProtocol ErrorCode = 29
 	// Transaction error codes
-	ErrInvalidProducerEpoch                 ErrorCode = 30
-	ErrInvalidTransactionState              ErrorCode = 31
-	ErrInvalidProducerIDMapping             ErrorCode = 32
-	ErrTransactionCoordinatorNotAvailable   ErrorCode = 33
-	ErrTransactionCoordinatorFenced         ErrorCode = 34
-	ErrProducerFenced                       ErrorCode = 35
-	ErrInvalidTransactionTimeout            ErrorCode = 36
-	ErrConcurrentTransactions               ErrorCode = 37
-	ErrTransactionAborted                   ErrorCode = 38
-	ErrInvalidPartitionList                 ErrorCode = 39
+	ErrInvalidProducerEpoch               ErrorCode = 30
+	ErrInvalidTransactionState            ErrorCode = 31
+	ErrInvalidProducerIDMapping           ErrorCode = 32
+	ErrTransactionCoordinatorNotAvailable ErrorCode = 33
+	ErrTransactionCoordinatorFenced       ErrorCode = 34
+	ErrProducerFenced                     ErrorCode = 35
+	ErrInvalidTransactionTimeout          ErrorCode = 36
+	ErrConcurrentTransactions             ErrorCode = 37
+	ErrTransactionAborted                 ErrorCode = 38
+	ErrInvalidPartitionList               ErrorCode = 39
 	// Security error codes
-	ErrAuthenticationFailed                 ErrorCode = 40
-	ErrAuthorizationFailed                  ErrorCode = 41
-	ErrInvalidCredentials                   ErrorCode = 42
-	ErrAccountDisabled                      ErrorCode = 43
+	ErrAuthenticationFailed ErrorCode = 40
+	ErrAuthorizationFailed  ErrorCode = 41
+	ErrInvalidCredentials   ErrorCode = 42
+	ErrAccountDisabled      ErrorCode = 43
 )
 
 // String returns the string representation of ErrorCode
@@ -243,12 +243,12 @@ func (e ErrorCode) Error() string {
 type RequestFlags uint16
 
 const (
-	FlagNone           RequestFlags = 0
-	FlagRequireAck     RequestFlags = 1 << 0 // Require acknowledgment
-	FlagCompressed     RequestFlags = 1 << 1 // Payload is compressed
-	FlagBatch          RequestFlags = 1 << 2 // Batch request
-	FlagAsync          RequestFlags = 1 << 3 // Async request (fire and forget)
-	FlagIdempotent     RequestFlags = 1 << 4 // Idempotent request
+	FlagNone       RequestFlags = 0
+	FlagRequireAck RequestFlags = 1 << 0 // Require acknowledgment
+	FlagCompressed RequestFlags = 1 << 1 // Payload is compressed
+	FlagBatch      RequestFlags = 1 << 2 // Batch request
+	FlagAsync      RequestFlags = 1 << 3 // Async request (fire and forget)
+	FlagIdempotent RequestFlags = 1 << 4 // Idempotent request
 )
 
 // RequestHeader represents the request header
