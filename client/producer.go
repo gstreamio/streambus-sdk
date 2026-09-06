@@ -15,6 +15,22 @@ type Producer struct {
 	client *Client
 	config ProducerConfig
 
+	// txnProducerID and txnProducerEpoch tag every ProduceRequest this
+	// producer sends as belonging to an open transaction, so
+	// Partition.BeginTransaction on the broker registers the write and a
+	// read-committed fetch gates on its resolving marker instead of treating
+	// it as an ordinary, immediately-visible write (see
+	// protocol.ProduceRequest's doc on these fields).
+	//
+	// Zero - the default for every Producer created through NewProducer or
+	// NewProducerWithConfig - means "not transactional", which is
+	// load-bearing on the wire: it is how the broker tells a plain write
+	// from a transactional one apart, and it is also what an idempotent-only
+	// producer is supposed to send. Only newTransactionalInternalProducer
+	// sets these away from zero; nothing outside this package may.
+	txnProducerID    int64
+	txnProducerEpoch int16
+
 	// Batching
 	mu          sync.Mutex
 	batches     map[string]*messageBatch // topic+partition -> batch
@@ -68,13 +84,26 @@ func NewProducerWithConfig(client *Client, config ProducerConfig) *Producer {
 	return p
 }
 
+// newTransactionalInternalProducer creates a plain Producer whose writes are
+// tagged with a transaction's producer id/epoch (see the Producer.txnProducerID
+// field comment), so the broker recognizes them as belonging to that open
+// transaction instead of as ordinary writes visible under every isolation
+// level the instant they land. This is TransactionalProducer.flushMessages'
+// own internal producer, not something any other caller should construct.
+func newTransactionalInternalProducer(client *Client, producerID int64, producerEpoch int16) *Producer {
+	p := NewProducer(client)
+	p.txnProducerID = producerID
+	p.txnProducerEpoch = producerEpoch
+	return p
+}
+
 // Send sends a single message
-func (p *Producer) Send(topic string, key, value []byte) error {
-	return p.SendToPartition(topic, 0, key, value)
+func (p *Producer) Send(ctx context.Context, topic string, key, value []byte) error {
+	return p.SendToPartition(ctx, topic, 0, key, value)
 }
 
 // SendToPartition sends a message to a specific partition
-func (p *Producer) SendToPartition(topic string, partitionID uint32, key, value []byte) error {
+func (p *Producer) SendToPartition(ctx context.Context, topic string, partitionID uint32, key, value []byte) error {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return ErrProducerClosed
 	}
@@ -92,20 +121,20 @@ func (p *Producer) SendToPartition(topic string, partitionID uint32, key, value 
 
 	// If batching is enabled, add to batch
 	if p.config.BatchSize > 0 {
-		return p.addToBatch(topic, partitionID, msg)
+		return p.addToBatch(ctx, topic, partitionID, msg)
 	}
 
 	// Otherwise, send immediately
-	return p.sendMessage(topic, partitionID, []protocol.Message{msg})
+	return p.sendMessage(ctx, topic, partitionID, []protocol.Message{msg})
 }
 
 // SendMessages sends multiple messages
-func (p *Producer) SendMessages(topic string, messages []protocol.Message) error {
-	return p.SendMessagesToPartition(topic, 0, messages)
+func (p *Producer) SendMessages(ctx context.Context, topic string, messages []protocol.Message) error {
+	return p.SendMessagesToPartition(ctx, topic, 0, messages)
 }
 
 // SendMessagesToPartition sends multiple messages to a specific partition
-func (p *Producer) SendMessagesToPartition(topic string, partitionID uint32, messages []protocol.Message) error {
+func (p *Producer) SendMessagesToPartition(ctx context.Context, topic string, partitionID uint32, messages []protocol.Message) error {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return ErrProducerClosed
 	}
@@ -129,7 +158,7 @@ func (p *Producer) SendMessagesToPartition(topic string, partitionID uint32, mes
 	// If batching is enabled and batch size not exceeded, add to batch
 	if p.config.BatchSize > 0 && len(messages) <= p.config.BatchSize {
 		for _, msg := range messages {
-			if err := p.addToBatch(topic, partitionID, msg); err != nil {
+			if err := p.addToBatch(ctx, topic, partitionID, msg); err != nil {
 				return err
 			}
 		}
@@ -137,11 +166,11 @@ func (p *Producer) SendMessagesToPartition(topic string, partitionID uint32, mes
 	}
 
 	// Otherwise, send immediately
-	return p.sendMessage(topic, partitionID, messages)
+	return p.sendMessage(ctx, topic, partitionID, messages)
 }
 
 // addToBatch adds a message to the batch
-func (p *Producer) addToBatch(topic string, partitionID uint32, msg protocol.Message) error {
+func (p *Producer) addToBatch(ctx context.Context, topic string, partitionID uint32, msg protocol.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -164,14 +193,14 @@ func (p *Producer) addToBatch(topic string, partitionID uint32, msg protocol.Mes
 
 	// If batch is full, flush it
 	if full {
-		return p.flushBatch(key, batch)
+		return p.flushBatch(ctx, key, batch)
 	}
 
 	return nil
 }
 
 // flushBatch flushes a batch
-func (p *Producer) flushBatch(key string, batch *messageBatch) error {
+func (p *Producer) flushBatch(ctx context.Context, key string, batch *messageBatch) error {
 	batch.mu.Lock()
 	if len(batch.messages) == 0 {
 		batch.mu.Unlock()
@@ -182,11 +211,11 @@ func (p *Producer) flushBatch(key string, batch *messageBatch) error {
 	batch.messages = make([]protocol.Message, 0, p.config.BatchSize)
 	batch.mu.Unlock()
 
-	return p.sendMessage(batch.topic, batch.partitionID, messages)
+	return p.sendMessage(ctx, batch.topic, batch.partitionID, messages)
 }
 
 // sendMessage sends messages to the server
-func (p *Producer) sendMessage(topic string, partitionID uint32, messages []protocol.Message) error {
+func (p *Producer) sendMessage(ctx context.Context, topic string, partitionID uint32, messages []protocol.Message) error {
 	flags := protocol.FlagNone
 	if p.config.RequireAck {
 		flags = protocol.FlagRequireAck
@@ -199,15 +228,17 @@ func (p *Producer) sendMessage(topic string, partitionID uint32, messages []prot
 			Flags:   flags,
 		},
 		Payload: &protocol.ProduceRequest{
-			Topic:       topic,
-			PartitionID: partitionID,
-			Messages:    messages,
+			Topic:         topic,
+			PartitionID:   partitionID,
+			Messages:      messages,
+			ProducerID:    p.txnProducerID,
+			ProducerEpoch: p.txnProducerEpoch,
 		},
 	}
 
 	// Send to first broker (later will have partition routing)
 	broker := p.client.config.Brokers[0]
-	_, err := p.client.sendRequestWithRetry(broker, req)
+	_, err := p.client.sendRequestWithRetry(ctx, broker, req)
 
 	if err != nil {
 		atomic.AddInt64(&p.messagesFailed, int64(len(messages)))
@@ -234,17 +265,22 @@ func (p *Producer) batchFlusher() {
 	for {
 		select {
 		case <-p.batchCtx.Done():
-			// Flush all remaining batches before exiting
-			p.FlushAll()
+			// Flush all remaining batches before exiting. Use a fresh
+			// context, not the already-cancelled p.batchCtx - otherwise the
+			// flush would abort immediately instead of actually draining
+			// pending messages on shutdown.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = p.FlushAll(shutdownCtx)
+			cancel()
 			return
 		case <-p.batchTicker.C:
-			p.FlushAll()
+			_ = p.FlushAll(p.batchCtx)
 		}
 	}
 }
 
 // Flush flushes all pending batches for a topic
-func (p *Producer) Flush(topic string) error {
+func (p *Producer) Flush(ctx context.Context, topic string) error {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return ErrProducerClosed
 	}
@@ -255,7 +291,7 @@ func (p *Producer) Flush(topic string) error {
 	var lastErr error
 	for key, batch := range p.batches {
 		if batch.topic == topic {
-			if err := p.flushBatch(key, batch); err != nil {
+			if err := p.flushBatch(ctx, key, batch); err != nil {
 				lastErr = err
 			}
 		}
@@ -265,7 +301,7 @@ func (p *Producer) Flush(topic string) error {
 }
 
 // FlushAll flushes all pending batches
-func (p *Producer) FlushAll() error {
+func (p *Producer) FlushAll(ctx context.Context) error {
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return ErrProducerClosed
 	}
@@ -275,7 +311,7 @@ func (p *Producer) FlushAll() error {
 
 	var lastErr error
 	for key, batch := range p.batches {
-		if err := p.flushBatch(key, batch); err != nil {
+		if err := p.flushBatch(ctx, key, batch); err != nil {
 			lastErr = err
 		}
 	}
@@ -289,8 +325,11 @@ func (p *Producer) Close() error {
 		return ErrProducerClosed
 	}
 
-	// Flush all pending batches before closing
-	p.FlushAll()
+	// Flush all pending batches before closing. Surface the error instead of
+	// discarding it - a caller relying on batched Send() + Close() to
+	// eventually deliver messages otherwise has no way to learn the final
+	// flush failed and messages were dropped.
+	flushErr := p.FlushAll(p.batchCtx)
 
 	// Now mark as closed
 	atomic.StoreInt32(&p.closed, 1)
@@ -302,7 +341,7 @@ func (p *Producer) Close() error {
 		p.batchWg.Wait()
 	}
 
-	return nil
+	return flushErr
 }
 
 // Stats returns producer statistics

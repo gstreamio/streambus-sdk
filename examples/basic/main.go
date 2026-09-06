@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -12,6 +13,9 @@ func main() {
 	fmt.Println("StreamBus SDK - Basic Producer/Consumer Example")
 	fmt.Println("================================================")
 	fmt.Println()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Create client configuration
 	config := client.DefaultConfig()
@@ -29,25 +33,25 @@ func main() {
 	// Create topic
 	topicName := "sdk-example"
 	fmt.Printf("Creating topic '%s'...\n", topicName)
-	if err := c.CreateTopic(topicName, 3, 1); err != nil {
+	if err := c.CreateTopic(ctx, topicName, 3, 1); err != nil {
 		log.Printf("Topic creation: %v (may already exist)", err)
 	}
 
 	// Produce messages
 	fmt.Println("\nProducing messages...")
-	produceMessages(c, topicName)
+	produceMessages(ctx, c, topicName)
 
 	// Wait a bit for messages to be written
 	time.Sleep(1 * time.Second)
 
 	// Consume messages
 	fmt.Println("\nConsuming messages...")
-	consumeMessages(c, topicName)
+	consumeMessages(ctx, c, topicName)
 
 	fmt.Println("\n✓ Example completed successfully!")
 }
 
-func produceMessages(c *client.Client, topic string) {
+func produceMessages(ctx context.Context, c *client.Client, topic string) {
 	producer := client.NewProducer(c)
 	defer producer.Close()
 
@@ -63,7 +67,7 @@ func produceMessages(c *client.Client, topic string) {
 	}
 
 	for i, msg := range messages {
-		err := producer.Send(topic, []byte(msg.key), []byte(msg.value))
+		err := producer.Send(ctx, topic, []byte(msg.key), []byte(msg.value))
 		if err != nil {
 			log.Printf("Failed to send message: %v", err)
 			continue
@@ -71,10 +75,16 @@ func produceMessages(c *client.Client, topic string) {
 		fmt.Printf("  [%d] Sent: key=%s, value=%s\n", i+1, msg.key, msg.value)
 	}
 
+	// Send batches the producer is still holding; without this the messages
+	// may not have reached the broker before the consumer below reads.
+	if err := producer.Flush(ctx, topic); err != nil {
+		log.Printf("Failed to flush: %v", err)
+	}
+
 	fmt.Printf("\nProduced %d messages\n", len(messages))
 }
 
-func consumeMessages(c *client.Client, topic string) {
+func consumeMessages(ctx context.Context, c *client.Client, topic string) {
 	// Create consumer for partition 0
 	consumer := client.NewConsumer(c, topic, 0)
 	defer consumer.Close()
@@ -87,7 +97,7 @@ func consumeMessages(c *client.Client, topic string) {
 	// Fetch messages
 	messageCount := 0
 	for i := 0; i < 10; i++ {
-		record, err := consumer.FetchOne()
+		record, err := consumer.FetchOne(ctx)
 		if err != nil {
 			// No more messages available
 			break

@@ -11,8 +11,8 @@ This guide will walk you through setting up and using the StreamBus Go SDK to bu
 
 Before you begin, make sure you have:
 
-- **Go 1.19 or higher** installed ([Download Go](https://golang.org/dl/))
-- **StreamBus broker** running (see [StreamBus installation](https://github.com/shawntherrien/streambus))
+- **Go 1.26 or higher** installed ([Download Go](https://golang.org/dl/))
+- **StreamBus broker** running (see [StreamBus installation](https://github.com/gstreamio/streambus))
 - Basic knowledge of Go programming
 
 ## Installation
