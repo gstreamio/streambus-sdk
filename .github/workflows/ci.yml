@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+env:
+  GO_VERSION: '1.26.6'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: golangci-lint
+        run: |
+          # golangci-lint-action@v4 hardcodes v1-only CLI flags
+          # (--out-format=github-actions), which a v2 binary rejects
+          # outright - and v1's "latest" resolution was built with an older
+          # Go toolchain than go.mod's `go 1.26.6` directive, which v1
+          # itself refuses to run against. Install via `go install` (Go's
+          # own module proxy/checksum verification) rather than the
+          # release-artifact install script.
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          "$(go env GOPATH)/bin/golangci-lint" run --timeout=5m ./...
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build all packages and examples
+        run: go build ./...
+
+      - name: Verify the module is tidy
+        run: |
+          # This SDK vendors self-contained copies of the core packages and
+          # must stay dependency-free; `go mod tidy` writing a require block
+          # means something external crept in.
+          go mod tidy
+          if ! git diff --exit-code go.mod; then
+            echo "go.mod is not tidy - a dependency was introduced"
+            exit 1
+          fi

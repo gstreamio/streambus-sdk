@@ -15,6 +15,14 @@ const (
 	HeaderSize     = 20               // Length(4) + RequestID(8) + Type(1) + Version(1) + Flags(2) + CRC32(4)
 )
 
+// Offset timestamp constants (Kafka-compatible)
+// These are used in GetOffsetRequest.Timestamp to request specific offsets
+const (
+	OffsetLatest       int64 = -1 // Return the latest offset (log end offset)
+	OffsetEarliest     int64 = -2 // Return the earliest offset (log start offset)
+	OffsetMaxTimestamp int64 = -3 // Return offset with max timestamp (not yet implemented)
+)
+
 // RequestType represents the type of request
 type RequestType byte
 
@@ -37,6 +45,7 @@ const (
 	RequestTypeAddOffsetsToTxn    RequestType = 0x10
 	RequestTypeEndTxn             RequestType = 0x11
 	RequestTypeTxnOffsetCommit    RequestType = 0x12
+	RequestTypeFindCoordinator    RequestType = 0x13
 )
 
 // String returns the string representation of RequestType
@@ -78,6 +87,8 @@ func (t RequestType) String() string {
 		return "EndTxn"
 	case RequestTypeTxnOffsetCommit:
 		return "TxnOffsetCommit"
+	case RequestTypeFindCoordinator:
+		return "FindCoordinator"
 	default:
 		return fmt.Sprintf("Unknown(%d)", t)
 	}
@@ -150,6 +161,11 @@ const (
 	ErrAuthorizationFailed  ErrorCode = 41
 	ErrInvalidCredentials   ErrorCode = 42
 	ErrAccountDisabled      ErrorCode = 43
+	// Leader epoch error codes
+	ErrFencedLeaderEpoch  ErrorCode = 50 // Leader epoch is fenced (stale producer/consumer)
+	ErrUnknownLeaderEpoch ErrorCode = 51 // Unknown leader epoch
+	// Schema registry error codes
+	ErrSchemaValidationFailed ErrorCode = 60 // Message failed schema validation
 )
 
 // String returns the string representation of ErrorCode
@@ -229,6 +245,12 @@ func (e ErrorCode) String() string {
 		return "InvalidCredentials"
 	case ErrAccountDisabled:
 		return "AccountDisabled"
+	case ErrFencedLeaderEpoch:
+		return "FencedLeaderEpoch"
+	case ErrUnknownLeaderEpoch:
+		return "UnknownLeaderEpoch"
+	case ErrSchemaValidationFailed:
+		return "SchemaValidationFailed"
 	default:
 		return fmt.Sprintf("Unknown(%d)", e)
 	}

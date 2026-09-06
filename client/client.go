@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -13,6 +14,10 @@ import (
 type Client struct {
 	config *Config
 	pool   *ConnectionPool
+
+	// coordCache remembers, per group ID or transactional ID, which broker
+	// FindCoordinator last named as the coordinator. See coordination.go.
+	coordCache *coordinatorCache
 
 	// Lifecycle
 	ctx    context.Context
@@ -43,11 +48,12 @@ func New(config *Config) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &Client{
-		config:    config,
-		pool:      NewConnectionPool(config),
-		ctx:       ctx,
-		cancel:    cancel,
-		startTime: time.Now(),
+		config:     config,
+		pool:       NewConnectionPool(config),
+		coordCache: newCoordinatorCache(),
+		ctx:        ctx,
+		cancel:     cancel,
+		startTime:  time.Now(),
 	}
 
 	return client, nil
@@ -85,7 +91,7 @@ func (c *Client) sendRequest(ctx context.Context, broker string, req *protocol.R
 	go func() {
 		// Set write deadline
 		if c.config.WriteTimeout > 0 {
-			conn.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout))
+			_ = conn.conn.SetWriteDeadline(time.Now().Add(c.config.WriteTimeout))
 		}
 
 		// Encode and send request
@@ -97,7 +103,7 @@ func (c *Client) sendRequest(ctx context.Context, broker string, req *protocol.R
 
 		// Set read deadline
 		if c.config.ReadTimeout > 0 {
-			conn.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
+			_ = conn.conn.SetReadDeadline(time.Now().Add(c.config.ReadTimeout))
 		}
 
 		// Read response
@@ -121,11 +127,11 @@ func (c *Client) sendRequest(ctx context.Context, broker string, req *protocol.R
 	select {
 	case <-timeoutCtx.Done():
 		// Connection is likely dead, remove from pool
-		c.pool.Remove(conn)
+		_ = c.pool.Remove(conn)
 		return nil, ErrRequestTimeout
 	case err := <-errChan:
 		// Connection had an error, remove from pool
-		c.pool.Remove(conn)
+		_ = c.pool.Remove(conn)
 		return nil, err
 	case resp := <-respChan:
 		// Verify request ID matches
@@ -146,21 +152,25 @@ func (c *Client) sendRequest(ctx context.Context, broker string, req *protocol.R
 }
 
 // sendRequestWithRetry sends a request with retry logic
-func (c *Client) sendRequestWithRetry(broker string, req *protocol.Request) (*protocol.Response, error) {
+func (c *Client) sendRequestWithRetry(ctx context.Context, broker string, req *protocol.Request) (*protocol.Response, error) {
 	var lastErr error
 	backoff := c.config.RetryBackoff
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Wait before retry
-			time.Sleep(backoff)
+			// Wait before retry, but stop immediately if ctx is cancelled
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
 			backoff = backoff * 2
 			if backoff > c.config.RetryMaxDelay {
 				backoff = c.config.RetryMaxDelay
 			}
 		}
 
-		resp, err := c.sendRequest(c.ctx, broker, req)
+		resp, err := c.sendRequest(ctx, broker, req)
 		if err == nil {
 			return resp, nil
 		}
@@ -177,7 +187,7 @@ func (c *Client) sendRequestWithRetry(broker string, req *protocol.Request) (*pr
 }
 
 // HealthCheck sends a health check request to a broker
-func (c *Client) HealthCheck(broker string) error {
+func (c *Client) HealthCheck(ctx context.Context, broker string) error {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -194,7 +204,7 @@ func (c *Client) HealthCheck(broker string) error {
 		Payload: &protocol.HealthCheckRequest{},
 	}
 
-	resp, err := c.sendRequest(c.ctx, broker, req)
+	resp, err := c.sendRequest(ctx, broker, req)
 	if err != nil {
 		return err
 	}
@@ -207,7 +217,7 @@ func (c *Client) HealthCheck(broker string) error {
 }
 
 // CreateTopic creates a new topic
-func (c *Client) CreateTopic(topic string, numPartitions uint32, replicationFactor uint16) error {
+func (c *Client) CreateTopic(ctx context.Context, topic string, numPartitions uint32, replicationFactor uint16) error {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -234,12 +244,12 @@ func (c *Client) CreateTopic(topic string, numPartitions uint32, replicationFact
 
 	// Send to first broker (later will have broker discovery)
 	broker := c.config.Brokers[0]
-	_, err := c.sendRequestWithRetry(broker, req)
+	_, err := c.sendRequestWithRetry(ctx, broker, req)
 	return err
 }
 
 // DeleteTopic deletes a topic
-func (c *Client) DeleteTopic(topic string) error {
+func (c *Client) DeleteTopic(ctx context.Context, topic string) error {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -264,12 +274,12 @@ func (c *Client) DeleteTopic(topic string) error {
 
 	// Send to first broker
 	broker := c.config.Brokers[0]
-	_, err := c.sendRequestWithRetry(broker, req)
+	_, err := c.sendRequestWithRetry(ctx, broker, req)
 	return err
 }
 
 // ListTopics lists all topics
-func (c *Client) ListTopics() ([]string, error) {
+func (c *Client) ListTopics(ctx context.Context) ([]string, error) {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -288,7 +298,7 @@ func (c *Client) ListTopics() ([]string, error) {
 
 	// Send to first broker
 	broker := c.config.Brokers[0]
-	resp, err := c.sendRequestWithRetry(broker, req)
+	resp, err := c.sendRequestWithRetry(ctx, broker, req)
 	if err != nil {
 		return nil, err
 	}
@@ -350,6 +360,12 @@ func (c *Client) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse, 
 		return nil, ErrInvalidOffset
 	}
 
+	// A negative MaxBytes would not merely be odd, it would wrap to an
+	// enormous unsigned limit on the wire and ask the broker for everything.
+	if req.MaxBytes < 0 {
+		return nil, ErrInvalidMaxBytes
+	}
+
 	protocolReq := &protocol.Request{
 		Header: protocol.RequestHeader{
 			Type:    protocol.RequestTypeFetch,
@@ -357,10 +373,13 @@ func (c *Client) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse, 
 			Flags:   protocol.FlagNone,
 		},
 		Payload: &protocol.FetchRequest{
-			Topic:       req.Topic,
+			Topic: req.Topic,
+			//nolint:gosec // #nosec G115 -- both are checked non-negative above
 			PartitionID: uint32(req.Partition),
 			Offset:      req.Offset,
-			MaxBytes:    uint32(req.MaxBytes),
+			//nolint:gosec // #nosec G115 -- checked non-negative above
+			MaxBytes:       uint32(req.MaxBytes),
+			IsolationLevel: req.IsolationLevel,
 		},
 	}
 
@@ -373,11 +392,22 @@ func (c *Client) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse, 
 
 	// Parse response
 	if fetchResp, ok := resp.Payload.(*protocol.FetchResponse); ok {
+		// The broker echoes back the partition it served. Trusting it blindly
+		// would let a malformed or hostile response wrap into a negative
+		// partition, so it is bounded before narrowing rather than assumed to
+		// match what was asked for.
+		if fetchResp.PartitionID > math.MaxInt32 {
+			return nil, fmt.Errorf("%w: broker returned partition %d", ErrInvalidResponse, fetchResp.PartitionID)
+		}
+
 		return &FetchResponse{
-			Topic:         fetchResp.Topic,
-			Partition:     int32(fetchResp.PartitionID),
-			Messages:      fetchResp.Messages,
-			HighWaterMark: fetchResp.HighWaterMark,
+			Topic: fetchResp.Topic,
+			//nolint:gosec // #nosec G115 -- bounded against MaxInt32 above
+			Partition:        int32(fetchResp.PartitionID),
+			Messages:         fetchResp.Messages,
+			HighWaterMark:    fetchResp.HighWaterMark,
+			LastStableOffset: fetchResp.LastStableOffset,
+			NextOffset:       fetchResp.NextOffset,
 		}, nil
 	}
 
@@ -415,6 +445,11 @@ type FetchRequest struct {
 	Partition int32
 	Offset    int64
 	MaxBytes  int32
+	// IsolationLevel selects whether the fetch can see records from
+	// transactions that have not committed or aborted yet. It defaults to
+	// protocol.IsolationReadUncommitted (the zero value), so an existing
+	// caller that never sets it keeps its current behavior.
+	IsolationLevel protocol.IsolationLevel
 }
 
 // FetchResponse represents a fetch response
@@ -423,4 +458,12 @@ type FetchResponse struct {
 	Partition     int32
 	Messages      []protocol.Message
 	HighWaterMark int64
+	// LastStableOffset is the offset a read-committed fetch is clamped to;
+	// see protocol.FetchResponse.
+	LastStableOffset int64
+	// NextOffset is the offset to resume from, accounting for any control
+	// records the broker filtered out of Messages; see
+	// protocol.FetchResponse. A caller managing its own offset should prefer
+	// this over Messages[len-1].Offset+1 for exactly that reason.
+	NextOffset int64
 }
