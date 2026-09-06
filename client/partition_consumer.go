@@ -68,7 +68,7 @@ func NewPartitionConsumerWithConfig(client *Client, topic string, partitions []u
 }
 
 // FetchFromPartition fetches messages from a specific partition
-func (pc *PartitionConsumer) FetchFromPartition(partitionID uint32) ([]protocol.Message, error) {
+func (pc *PartitionConsumer) FetchFromPartition(ctx context.Context, partitionID uint32) ([]protocol.Message, error) {
 	if atomic.LoadInt32(&pc.closed) == 1 {
 		return nil, ErrConsumerClosed
 	}
@@ -84,6 +84,19 @@ func (pc *PartitionConsumer) FetchFromPartition(partitionID uint32) ([]protocol.
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	// The -1 "latest" sentinel from DefaultConfig is never a valid offset to
+	// send to the broker - resolve it to the current end-of-log offset the
+	// first time a fetch is attempted for this partition, so a consumer that
+	// never calls SeekPartition/SeekAll still starts from "latest" as
+	// documented.
+	if state.offset == -1 {
+		endOffset, err := pc.resolveEndOffset(ctx, partitionID)
+		if err != nil {
+			return nil, err
+		}
+		state.offset = endOffset
+	}
+
 	// Create fetch request
 	req := &protocol.Request{
 		Header: protocol.RequestHeader{
@@ -92,16 +105,17 @@ func (pc *PartitionConsumer) FetchFromPartition(partitionID uint32) ([]protocol.
 			Flags:   protocol.FlagNone,
 		},
 		Payload: &protocol.FetchRequest{
-			Topic:       pc.topic,
-			PartitionID: partitionID,
-			Offset:      state.offset,
-			MaxBytes:    pc.config.MaxFetchBytes,
+			Topic:          pc.topic,
+			PartitionID:    partitionID,
+			Offset:         state.offset,
+			MaxBytes:       pc.config.MaxFetchBytes,
+			IsolationLevel: pc.config.IsolationLevel,
 		},
 	}
 
 	// Send request (with partition routing in the future)
 	broker := pc.client.config.Brokers[0]
-	resp, err := pc.client.sendRequestWithRetry(broker, req)
+	resp, err := pc.client.sendRequestWithRetry(ctx, broker, req)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +125,18 @@ func (pc *PartitionConsumer) FetchFromPartition(partitionID uint32) ([]protocol.
 		return nil, ErrInvalidResponse
 	}
 
-	// Update partition state
-	if len(fetchResp.Messages) > 0 {
+	// Update partition state. NextOffset accounts for control records the
+	// broker filtered out of Messages before we ever saw them - without it,
+	// a window that held only a filtered marker would leave Messages empty
+	// and this offset would never move, so the same empty-looking window
+	// would be re-fetched forever. A server that predates NextOffset sends
+	// the -1 sentinel, in which case the old last-message rule still applies
+	// (correct against a server that never filtered anything, and this
+	// method never truncates what it returns the way Consumer.FetchN does).
+	switch {
+	case fetchResp.NextOffset >= 0:
+		state.offset = fetchResp.NextOffset
+	case len(fetchResp.Messages) > 0:
 		lastMsg := fetchResp.Messages[len(fetchResp.Messages)-1]
 		state.offset = lastMsg.Offset + 1
 	}
@@ -133,8 +157,37 @@ func (pc *PartitionConsumer) FetchFromPartition(partitionID uint32) ([]protocol.
 	return fetchResp.Messages, nil
 }
 
+// resolveEndOffset asks the broker for the current end-of-log (high water
+// mark) offset for the given partition of this consumer's topic.
+func (pc *PartitionConsumer) resolveEndOffset(ctx context.Context, partitionID uint32) (int64, error) {
+	req := &protocol.Request{
+		Header: protocol.RequestHeader{
+			Type:    protocol.RequestTypeGetOffset,
+			Version: protocol.ProtocolVersion,
+			Flags:   protocol.FlagNone,
+		},
+		Payload: &protocol.GetOffsetRequest{
+			Topic:       pc.topic,
+			PartitionID: partitionID,
+		},
+	}
+
+	broker := pc.client.config.Brokers[0]
+	resp, err := pc.client.sendRequestWithRetry(ctx, broker, req)
+	if err != nil {
+		return 0, err
+	}
+
+	offsetResp, ok := resp.Payload.(*protocol.GetOffsetResponse)
+	if !ok {
+		return 0, ErrInvalidResponse
+	}
+
+	return offsetResp.EndOffset, nil
+}
+
 // FetchAll fetches from all assigned partitions
-func (pc *PartitionConsumer) FetchAll() (map[uint32][]protocol.Message, error) {
+func (pc *PartitionConsumer) FetchAll(ctx context.Context) (map[uint32][]protocol.Message, error) {
 	if atomic.LoadInt32(&pc.closed) == 1 {
 		return nil, ErrConsumerClosed
 	}
@@ -149,7 +202,7 @@ func (pc *PartitionConsumer) FetchAll() (map[uint32][]protocol.Message, error) {
 		go func(pid uint32) {
 			defer wg.Done()
 
-			messages, err := pc.FetchFromPartition(pid)
+			messages, err := pc.FetchFromPartition(ctx, pid)
 			if err != nil {
 				mu.Lock()
 				lastErr = err
@@ -173,7 +226,7 @@ func (pc *PartitionConsumer) FetchAll() (map[uint32][]protocol.Message, error) {
 }
 
 // FetchRoundRobin fetches from partitions in round-robin fashion
-func (pc *PartitionConsumer) FetchRoundRobin() ([]protocol.Message, error) {
+func (pc *PartitionConsumer) FetchRoundRobin(ctx context.Context) ([]protocol.Message, error) {
 	if atomic.LoadInt32(&pc.closed) == 1 {
 		return nil, ErrConsumerClosed
 	}
@@ -186,7 +239,7 @@ func (pc *PartitionConsumer) FetchRoundRobin() ([]protocol.Message, error) {
 
 	// Try each partition once
 	for _, partitionID := range pc.partitions {
-		messages, err := pc.FetchFromPartition(partitionID)
+		messages, err := pc.FetchFromPartition(ctx, partitionID)
 		if err != nil {
 			// Log error but continue with other partitions
 			continue
@@ -314,7 +367,7 @@ func (pc *PartitionConsumer) PollPartitions(ctx context.Context, interval time.D
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			results, err := pc.FetchAll()
+			results, err := pc.FetchAll(ctx)
 			if err != nil {
 				// Log error but continue polling
 				continue

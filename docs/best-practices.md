@@ -543,7 +543,7 @@ func BenchmarkProducer(b *testing.B) {
 ### Container Deployments
 
 ```dockerfile
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go build -o streambus-app

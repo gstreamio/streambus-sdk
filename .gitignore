@@ -33,6 +33,12 @@ bin/
 dist/
 build/
 
+# Compiled example binaries - `go build` in an example directory emits a
+# binary named after the directory, with no extension to match on.
+/examples/basic/basic
+/examples/consumergroup/consumergroup
+/examples/transaction/transaction
+
 # Test data
 *.tmp
 test-data/

@@ -87,6 +87,12 @@ type MemberMetadata struct {
 	// Current partition assignment
 	Assignment *MemberAssignment
 
+	// AssignmentBytes is the encoded assignment exactly as the group leader
+	// produced it. SyncGroup hands this back to the member verbatim, so a
+	// follower receives the assignment the leader computed for it rather than
+	// re-deriving it (or, as before, receiving nothing).
+	AssignmentBytes []byte
+
 	// Protocol metadata provided by member
 	ProtocolMetadata []byte
 
@@ -128,6 +134,11 @@ type OffsetAndMetadata struct {
 
 	// Expiration timestamp (for cleanup)
 	ExpireTime time.Time
+
+	// LeaderEpoch is the epoch of the partition leader when this offset was committed.
+	// Used for offset validation - if leader epoch has changed significantly,
+	// the committed offset may no longer be valid (truncation may have occurred).
+	LeaderEpoch int64
 }
 
 // GroupOffsets represents all committed offsets for a group

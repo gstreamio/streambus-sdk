@@ -11,7 +11,24 @@ import (
 	"github.com/gstreamio/streambus-sdk/logging"
 )
 
-// TransactionCoordinator manages transactional operations
+// TransactionCoordinator manages transactional operations.
+//
+// EndTxn drives the transaction state machine (Ongoing -> PrepareCommit /
+// PrepareAbort -> CompleteCommit / CompleteAbort) and, between the two
+// phases, writes a transaction marker to every partition the transaction
+// touched via the configured MarkerWriter. A transaction is reported as
+// committed only once every marker is durable; a partial write leaves the
+// transaction in its prepare state so a retry can finish it - calling EndTxn
+// again with the same outcome resumes exactly where the failed attempt left
+// off, rather than being rejected. If no retry ever comes, the expiry sweep
+// eventually reaps the stuck prepare itself, completing it according to the
+// outcome already recorded rather than leaving it wedged forever.
+//
+// Offsets sent through TxnOffsetCommit are held until the outcome is known
+// and published to the consumer group through the configured OffsetCommitter
+// on commit, or discarded on abort.
+//
+// Wire requests reach this coordinator through server.TransactionHandler.
 type TransactionCoordinator struct {
 	mu sync.RWMutex
 
@@ -27,6 +44,16 @@ type TransactionCoordinator struct {
 
 	// Transaction log
 	txnLog TransactionLog
+
+	// markerWriter persists transaction markers to partitions. See
+	// markers.go; without one, EndTxn cannot honour a commit.
+	markerWriter MarkerWriter
+
+	// offsetCommitter publishes transactional offsets on commit.
+	offsetCommitter OffsetCommitter
+
+	// clock returns the current time; overridable in tests.
+	clock func() time.Time
 
 	// Lifecycle
 	ctx    context.Context
@@ -178,8 +205,15 @@ func (tc *TransactionCoordinator) AddPartitionsToTxn(req *AddPartitionsToTxnRequ
 		}, err
 	}
 
-	// Get or create transaction
+	// Get or create transaction. A transactional ID is reused across
+	// transactions, so a record left over from a completed one is replaced
+	// rather than blocking the next transaction: keeping it would let a
+	// producer run exactly one transaction in its lifetime.
 	txn, exists := tc.transactions[req.TransactionID]
+	if exists && isTerminalState(txn.State) {
+		exists = false
+	}
+
 	if !exists {
 		// Get producer to retrieve transaction timeout
 		producer, producerExists := tc.producers[req.ProducerID]
@@ -263,10 +297,14 @@ func (tc *TransactionCoordinator) EndTxn(req *EndTxnRequest) (*EndTxnResponse, e
 		}, nil
 	}
 
-	// Verify transaction is ongoing
-	if txn.State != StateOngoing {
+	// A transaction already sitting in a prepare state here is a retry of a
+	// previous EndTxn whose phase 2 failed partway through. endTxnStateError
+	// resumes it rather than rejecting it, but only if the retry asks for
+	// the same outcome phase 1 already recorded: that outcome may already be
+	// durable on some partitions, so it must never be flipped.
+	if errCode := endTxnStateError(txn, req.Commit); errCode != ErrorNone {
 		return &EndTxnResponse{
-			ErrorCode: ErrorInvalidTransactionState,
+			ErrorCode: errCode,
 		}, nil
 	}
 
@@ -277,29 +315,30 @@ func (tc *TransactionCoordinator) EndTxn(req *EndTxnRequest) (*EndTxnResponse, e
 		}, nil
 	}
 
-	// Phase 1: Prepare
-	if req.Commit {
-		txn.State = StatePrepareCommit
-	} else {
-		txn.State = StatePrepareAbort
+	// Phase 1: Prepare, only the first time through. Recording the intended
+	// outcome before touching any partition is what lets a retry after a
+	// crash or partial failure finish the transaction the same way. A
+	// transaction already in a prepare state has already been through this
+	// step - endTxnStateError above confirmed the retry agrees with what was
+	// recorded - so it proceeds straight to phase 2.
+	if txn.State == StateOngoing {
+		if req.Commit {
+			txn.State = StatePrepareCommit
+		} else {
+			txn.State = StatePrepareAbort
+		}
+		txn.LastUpdateTime = tc.now()
+		tc.logTransaction(txn)
 	}
-	txn.LastUpdateTime = time.Now()
 
-	// Log prepare phase
-	tc.logTransaction(txn)
-
-	// Phase 2: Complete
-	// In a real implementation, this would write transaction markers to all partitions
-	// and wait for acknowledgments before completing
-	if req.Commit {
-		txn.State = StateCompleteCommit
-	} else {
-		txn.State = StateCompleteAbort
+	// Phases 2 and 3: write markers, resolve pending offsets, and complete.
+	// Shared with the expiry sweep so a resumed retry and a reaped stuck
+	// prepare finish through exactly the same logic.
+	if err := tc.resolvePrepared(txn); err != nil {
+		return &EndTxnResponse{
+			ErrorCode: ErrorTransactionCoordinatorNotAvailable,
+		}, nil
 	}
-	txn.LastUpdateTime = time.Now()
-
-	// Log complete phase
-	tc.logTransaction(txn)
 
 	action := "committed"
 	if !req.Commit {
@@ -318,6 +357,197 @@ func (tc *TransactionCoordinator) EndTxn(req *EndTxnRequest) (*EndTxnResponse, e
 	return &EndTxnResponse{
 		ErrorCode: ErrorNone,
 	}, nil
+}
+
+// endTxnStateError reports the error EndTxn should return for a transaction
+// in txn's current state, or ErrorNone if it may proceed.
+//
+// StateOngoing always proceeds: that is the normal, first call. A prepare
+// state may also proceed, but only if commit agrees with the outcome phase 1
+// already recorded there (StatePrepareCommit means commit, StatePrepareAbort
+// means abort) - that is a retry resuming phase 2, not a new decision. Any
+// other combination, including a prepare state asked for the opposite
+// outcome, is rejected: the outcome was decided once, and partitions may
+// already carry markers for it.
+func endTxnStateError(txn *TransactionMetadata, commit bool) ErrorCode {
+	switch txn.State {
+	case StateOngoing:
+		return ErrorNone
+	case StatePrepareCommit:
+		if commit {
+			return ErrorNone
+		}
+	case StatePrepareAbort:
+		if !commit {
+			return ErrorNone
+		}
+	}
+	return ErrorInvalidTransactionState
+}
+
+// resolvePrepared finishes a transaction already sitting in a prepare state:
+// it writes markers to every partition, then publishes or discards any
+// pending offsets, and advances the transaction to its terminal state. The
+// outcome (commit or abort) is taken from txn.State rather than passed in,
+// since that is the outcome phase 1 already recorded and this must never
+// resolve a transaction to anything else.
+//
+// It is shared by EndTxn (resuming a retried request) and the expiry sweep
+// (reaping a stuck prepare nothing ever retried), so both drive a partially
+// finished transaction through identical phase 2/3 logic. A non-nil error
+// leaves txn in its current prepare state for another retry: writeMarkers
+// and resolvePendingOffsets are both safe to call again on the same
+// transaction (see writeMarkers).
+func (tc *TransactionCoordinator) resolvePrepared(txn *TransactionMetadata) error {
+	commit := txn.State == StatePrepareCommit
+
+	if err := tc.writeMarkers(txn, commit); err != nil {
+		tc.logger.Error("Failed to write transaction markers", err, logging.Fields{
+			"transaction_id": string(txn.TransactionID),
+			"producer_id":    int64(txn.ProducerID),
+		})
+		return err
+	}
+
+	// Publish or discard any offsets that were committed inside the
+	// transaction, now that its outcome is durable.
+	if err := tc.resolvePendingOffsets(txn, commit); err != nil {
+		tc.logger.Error("Failed to publish transactional offsets", err, logging.Fields{
+			"transaction_id": string(txn.TransactionID),
+			"group_id":       txn.GroupID,
+		})
+		return err
+	}
+
+	if commit {
+		txn.State = StateCompleteCommit
+	} else {
+		txn.State = StateCompleteAbort
+	}
+	txn.LastUpdateTime = tc.now()
+	tc.logTransaction(txn)
+
+	return nil
+}
+
+// resolvePendingOffsets publishes a transaction's offsets on commit and drops
+// them on abort.
+func (tc *TransactionCoordinator) resolvePendingOffsets(txn *TransactionMetadata, commit bool) error {
+	if len(txn.PendingOffsets) == 0 {
+		return nil
+	}
+
+	if !commit {
+		txn.PendingOffsets = nil
+		return nil
+	}
+
+	if tc.offsetCommitter == nil {
+		return fmt.Errorf("no offset committer configured: cannot publish offsets for transaction %s", txn.TransactionID)
+	}
+
+	if err := tc.offsetCommitter.CommitOffsets(txn.GroupID, txn.PendingOffsets); err != nil {
+		return err
+	}
+
+	txn.PendingOffsets = nil
+	return nil
+}
+
+// TxnOffsetCommit records consumer offsets as part of a transaction.
+//
+// The offsets are held until EndTxn resolves the transaction: on commit they
+// are published to the consumer group, on abort they are discarded. They are
+// deliberately not visible to the group before then, which is what makes a
+// read-process-write loop atomic.
+func (tc *TransactionCoordinator) TxnOffsetCommit(req *TxnOffsetCommitRequest) (*TxnOffsetCommitResponse, error) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	partitions := partitionsFromOffsets(req.Offsets)
+
+	if err := tc.validateProducer(req.ProducerID, req.ProducerEpoch); err != nil {
+		return &TxnOffsetCommitResponse{
+			Errors: tc.buildPartitionErrors(partitions, ErrorProducerFenced),
+		}, nil
+	}
+
+	txn, exists := tc.transactions[req.TransactionID]
+	if !exists || txn.State != StateOngoing {
+		return &TxnOffsetCommitResponse{
+			Errors: tc.buildPartitionErrors(partitions, ErrorInvalidTransactionState),
+		}, nil
+	}
+
+	if txn.ProducerID != req.ProducerID || txn.ProducerEpoch != req.ProducerEpoch {
+		return &TxnOffsetCommitResponse{
+			Errors: tc.buildPartitionErrors(partitions, ErrorInvalidProducerIDMapping),
+		}, nil
+	}
+
+	// AddOffsetsToTxn must have named the group first: committing offsets for
+	// a group the transaction never joined would publish them outside the
+	// transaction's scope.
+	if txn.GroupID == "" || txn.GroupID != req.GroupID {
+		return &TxnOffsetCommitResponse{
+			Errors: tc.buildPartitionErrors(partitions, ErrorInvalidTransactionState),
+		}, nil
+	}
+
+	if tc.offsetCommitter == nil {
+		return &TxnOffsetCommitResponse{
+			Errors: tc.buildPartitionErrors(partitions, ErrorTransactionCoordinatorNotAvailable),
+		}, nil
+	}
+
+	if txn.PendingOffsets == nil {
+		txn.PendingOffsets = make(map[string]map[int32]OffsetMetadata)
+	}
+	for topic, offsets := range req.Offsets {
+		if txn.PendingOffsets[topic] == nil {
+			txn.PendingOffsets[topic] = make(map[int32]OffsetMetadata)
+		}
+		for partition, offset := range offsets {
+			txn.PendingOffsets[topic][partition] = offset
+		}
+	}
+	txn.LastUpdateTime = tc.now()
+
+	tc.logger.Debug("Recorded transactional offsets", logging.Fields{
+		"transaction_id": string(req.TransactionID),
+		"group_id":       req.GroupID,
+		"topics":         len(req.Offsets),
+	})
+
+	return &TxnOffsetCommitResponse{
+		Errors: tc.buildPartitionErrors(partitions, ErrorNone),
+	}, nil
+}
+
+// partitionsFromOffsets flattens an offset map into the partition list used
+// for per-partition error reporting.
+func partitionsFromOffsets(offsets map[string]map[int32]OffsetMetadata) []PartitionMetadata {
+	partitions := make([]PartitionMetadata, 0, len(offsets))
+	for topic, byPartition := range offsets {
+		for partition := range byPartition {
+			partitions = append(partitions, PartitionMetadata{Topic: topic, Partition: partition})
+		}
+	}
+	return partitions
+}
+
+// isTerminalState reports whether a transaction has finished, one way or the
+// other, and its transactional ID is free for the next transaction.
+func isTerminalState(state TransactionState) bool {
+	return state == StateCompleteCommit || state == StateCompleteAbort
+}
+
+// now returns the current time through the coordinator's clock.
+func (tc *TransactionCoordinator) now() time.Time {
+	if tc.clock != nil {
+		return tc.clock()
+	}
+	return time.Now()
 }
 
 // AddOffsetsToTxn adds consumer group offsets to a transaction
@@ -347,8 +577,15 @@ func (tc *TransactionCoordinator) AddOffsetsToTxn(req *AddOffsetsToTxnRequest) (
 		}, nil
 	}
 
-	// In a real implementation, this would add the consumer group offsets
-	// to the transaction's metadata for coordinated commit
+	// Record the group on the transaction. TxnOffsetCommit checks this, so
+	// offsets can only be committed for the group the producer declared.
+	if txn.GroupID != "" && txn.GroupID != req.GroupID {
+		return &AddOffsetsToTxnResponse{
+			ErrorCode: ErrorInvalidTransactionState,
+		}, nil
+	}
+	txn.GroupID = req.GroupID
+	txn.LastUpdateTime = tc.now()
 
 	tc.logger.Debug("Added offsets to transaction", logging.Fields{
 		"transaction_id": req.TransactionID,
@@ -456,26 +693,58 @@ func (tc *TransactionCoordinator) checkExpiredTransactions() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	now := time.Now()
+	now := tc.now()
 	for txnID, txn := range tc.transactions {
-		if txn.State == StateOngoing && txn.IsExpired() {
+		if !txn.IsExpired() {
+			continue
+		}
+
+		switch txn.State {
+		case StateOngoing:
 			tc.logger.Warn("Transaction expired, aborting", logging.Fields{
 				"transaction_id": txnID,
 				"age":            now.Sub(txn.StartTime),
 			})
 
-			// Abort expired transaction
+			// Move an abandoned transaction into prepare-abort so the code
+			// below - shared with a stuck prepare - resolves it exactly as
+			// an explicit EndTxn would: a partition learns a transaction is
+			// resolved only from its marker, so skipping that would leave
+			// the transaction hanging there forever, pinning the
+			// partition's last stable offset and stalling every
+			// read-committed consumer on it.
 			txn.State = StatePrepareAbort
 			txn.LastUpdateTime = now
 			tc.logTransaction(txn)
 
-			txn.State = StateCompleteAbort
-			txn.LastUpdateTime = now
-			tc.logTransaction(txn)
+		case StatePrepareCommit, StatePrepareAbort:
+			// A transaction whose EndTxn recorded an outcome but whose
+			// marker write then failed, with no retry ever arriving to
+			// resume it (see EndTxn/resolvePrepared). It must not sit here
+			// forever: complete it according to the outcome already
+			// recorded rather than reversing it - a prepare-commit finishes
+			// as a commit, a prepare-abort as an abort. "Resolving" a stuck
+			// prepare-commit by aborting it would silently lose data a
+			// producer was told nothing about.
+			tc.logger.Warn("Transaction stuck in prepare state past its timeout, completing", logging.Fields{
+				"transaction_id": txnID,
+				"state":          txn.State.String(),
+				"age":            now.Sub(txn.StartTime),
+			})
 
-			// Schedule cleanup
-			go tc.scheduleTransactionCleanup(txnID)
+		default:
+			// StateEmpty or a terminal state already awaiting cleanup:
+			// nothing for the expiry sweep to do.
+			continue
 		}
+
+		if err := tc.resolvePrepared(txn); err != nil {
+			// Left in its current prepare state; the next sweep retries.
+			continue
+		}
+
+		// Schedule cleanup
+		go tc.scheduleTransactionCleanup(txnID)
 	}
 }
 
