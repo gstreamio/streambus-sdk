@@ -3,6 +3,8 @@ package client
 import (
 	"crypto/tls"
 	"time"
+
+	"github.com/gstreamio/streambus-sdk/protocol"
 )
 
 // Config holds client configuration
@@ -81,6 +83,13 @@ type ConsumerConfig struct {
 
 	// Auto-commit offset interval
 	AutoCommitInterval time.Duration
+
+	// IsolationLevel selects whether fetches can see records from
+	// transactions that have not committed or aborted yet. It defaults to
+	// protocol.IsolationReadUncommitted (the zero value), matching the
+	// broker's default and every consumer's behavior before isolation
+	// levels existed.
+	IsolationLevel protocol.IsolationLevel
 }
 
 // DefaultConfig returns default client configuration
@@ -122,6 +131,16 @@ func (c *Config) Validate() error {
 	}
 
 	if c.ConnectTimeout <= 0 {
+		return ErrInvalidTimeout
+	}
+
+	// A zero RequestTimeout makes every request's context.WithTimeout
+	// already-expired, so every call fails instantly with a timeout error
+	// that gives no hint the real problem is the config itself. Callers who
+	// build a Config literal directly (instead of starting from
+	// DefaultConfig()) need this caught here, not discovered as a mystery
+	// "request timeout" deep in the retry logic.
+	if c.RequestTimeout <= 0 {
 		return ErrInvalidTimeout
 	}
 
