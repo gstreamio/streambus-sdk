@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  # Lets a release be re-driven by hand when a run fails for a reason that
+  # has since been fixed, without needing an empty commit to main.
+  workflow_dispatch:
 
 permissions:
   contents: write
