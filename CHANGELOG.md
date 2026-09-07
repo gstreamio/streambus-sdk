@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0](https://github.com/gstreamio/streambus-sdk/compare/streambus-sdk-v0.1.1...streambus-sdk-v0.2.0) (2026-09-06)
+## [0.2.0](https://github.com/gstreamio/streambus-sdk/compare/v0.1.1...v0.2.0) (2026-09-06)
 
 
 ### ⚠ BREAKING CHANGES
@@ -9,10 +9,12 @@
 
 ### Features
 
-* sync vendored packages with streambus main, add CI, retire the Report Card badge ([2604fb5](https://github.com/gstreamio/streambus-sdk/commit/2604fb53d78b4979c3f42951734d4cf4c33dfcf5))
-* sync vendored packages with streambus main, add CI, retire the Report Card badge ([3a1396c](https://github.com/gstreamio/streambus-sdk/commit/3a1396c111e57a7f1949ecdc0e2199120ddae4bf))
+* sync vendored packages with streambus main, add CI, retire the Report Card badge ([baf920e](https://github.com/gstreamio/streambus-sdk/commit/baf920e7))
 
+### Bug Fixes
+
+* tag releases v0.2.0, not streambus-sdk-v0.2.0 ([a4e9f92](https://github.com/gstreamio/streambus-sdk/commit/a4e9f92c))
 
 ### Continuous Integration
 
-* add release-please so the SDK actually cuts releases ([7501e7c](https://github.com/gstreamio/streambus-sdk/commit/7501e7cfeea030884feb5ffee8eb164322e6d32a))
+* add release-please so the SDK actually cuts releases ([598f273](https://github.com/gstreamio/streambus-sdk/commit/598f273e))
